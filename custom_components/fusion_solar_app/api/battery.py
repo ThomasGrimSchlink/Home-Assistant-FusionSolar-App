@@ -22,6 +22,51 @@ _LOGGER = logging.getLogger(__name__)
 class FusionSolarBatteryMixin:
     """Battery helpers for FusionSolar API."""
 
+    def force_charge_to_soc(self, target_soc: int) -> None:
+        """Start a user-requested forced charge via the EU5 web endpoint.
+
+        This is an undocumented portal API. Never automatically retry a write.
+        """
+        import json
+
+        if type(target_soc) is not int or not 1 <= target_soc <= 100:
+            raise ValueError("target_soc must be an integer between 1 and 100")
+        if not self.connected or not self.battery_dn:
+            raise RuntimeError("FusionSolar session or battery DN unavailable")
+        if self.data_host != "uni001eu5.fusionsolar.huawei.com":
+            raise RuntimeError("Battery control is only validated on uni001eu5")
+
+        self.refresh_csrf()
+        _, payload = self._request_json(
+            "POST",
+            f"https://{self.data_host}/rest/pvms/web/device/v1/deviceExt/set-config-signals",
+            context="FusionSolar battery forced charge",
+            headers={
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Roarand": self.csrf,
+                "Origin": f"https://{self.data_host}",
+                "Referer": f"https://{self.data_host}{DATA_REFERER_URL}",
+                "X-Requested-With": "XMLHttpRequest",
+                "x-non-renewal-session": "true",
+            },
+            data={
+                "dn": self.battery_dn,
+                "changeValues": json.dumps([
+                    {"id": "230320245", "value": "1"},
+                    {"id": "230320246", "value": str(target_soc)},
+                ], separators=(",", ":")),
+            },
+        )
+        if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+            raise RuntimeError("FusionSolar rejected battery charge command")
+        results = payload.get("data")
+        if not isinstance(results, list) or not results or any(
+            not isinstance(item, dict) or str(item.get("code")) != "0"
+            for item in results
+        ):
+            raise RuntimeError("FusionSolar returned a battery command error")
+
     def get_battery_config_devices(self) -> list[Device]:
         """Read optional battery configuration signals at most once per hour.
 

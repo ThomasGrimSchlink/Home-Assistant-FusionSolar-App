@@ -8,7 +8,9 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.exceptions import HomeAssistantError
+import voluptuous as vol
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntry
@@ -96,6 +98,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
             entry_identity=identity_signature(config_entry),
         )
         await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
+        if not mock_transition:
+            _register_battery_charge_service(hass)
         if mock_transition:
             from .mock_service import register_mock_service
 
@@ -109,6 +113,43 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
 
     # Return true to denote a successful setup.
     return True
+
+
+def _register_battery_charge_service(hass: HomeAssistant) -> None:
+    """Register an explicitly invoked battery write action once per domain."""
+    service_name = "battery_charge"
+    if hass.services.has_service(DOMAIN, service_name):
+        return
+
+    async def handle_charge(call: ServiceCall) -> None:
+        entry_id = call.data["config_entry_id"]
+        runtime = hass.data.get(DOMAIN, {}).get(entry_id)
+        if runtime is None or runtime.mock_transition:
+            raise HomeAssistantError("Active real FusionSolar config entry not found")
+        coordinator = runtime.coordinator
+        if not coordinator.api.connected:
+            raise HomeAssistantError("FusionSolar is not connected; try again after refresh")
+        target_soc = call.data["target_soc"]
+        try:
+            await hass.async_add_executor_job(
+                coordinator._call_api_serialized,
+                lambda: coordinator.api.force_charge_to_soc(target_soc),
+            )
+        except Exception as err:
+            _LOGGER.warning("Battery charge request failed: %s", type(err).__name__)
+            raise HomeAssistantError(
+                "Battery charge request failed; check FusionSolar before retrying"
+            ) from err
+
+    hass.services.async_register(
+        DOMAIN,
+        service_name,
+        handle_charge,
+        schema=vol.Schema({
+            vol.Required("config_entry_id"): str,
+            vol.Required("target_soc"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+        }),
+    )
 
 
 async def _async_migrate_inverter_unique_ids(

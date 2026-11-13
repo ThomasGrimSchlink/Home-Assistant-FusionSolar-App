@@ -21,3 +21,25 @@ mock_scenario:
           options:
             - advance
             - reset
+
+battery_charge:
+  name: Charge battery to target SOC
+  description: >-
+    Start forced charging via the undocumented FusionSolar EU5 web API.
+    Requires a real integration entry. No automatic retry is performed.
+  fields:
+    config_entry_id:
+      name: Config entry ID
+      required: true
+      selector:
+        text:
+    target_soc:
+      name: Target SOC (%)
+      required: true
+      example: 80
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          mode: box
