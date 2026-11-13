@@ -99,7 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         )
         await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
         if not mock_transition:
-            _register_battery_charge_service(hass)
+            _register_battery_control_services(hass)
         if mock_transition:
             from .mock_service import register_mock_service
 
@@ -115,41 +115,56 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     return True
 
 
-def _register_battery_charge_service(hass: HomeAssistant) -> None:
-    """Register an explicitly invoked battery write action once per domain."""
-    service_name = "battery_charge"
-    if hass.services.has_service(DOMAIN, service_name):
-        return
+def _register_battery_control_services(hass: HomeAssistant) -> None:
+    """Register explicit battery write actions once per integration domain."""
+    commands = {
+        "battery_charge": "force_charge_to_soc",
+        "battery_discharge": "force_discharge_to_soc",
+        "battery_stop": "stop_forced_battery_operation",
+    }
 
-    async def handle_charge(call: ServiceCall) -> None:
-        entry_id = call.data["config_entry_id"]
-        runtime = hass.data.get(DOMAIN, {}).get(entry_id)
-        if runtime is None or runtime.mock_transition:
-            raise HomeAssistantError("Active real FusionSolar config entry not found")
-        coordinator = runtime.coordinator
-        if not coordinator.api.connected:
-            raise HomeAssistantError("FusionSolar is not connected; try again after refresh")
-        target_soc = call.data["target_soc"]
-        try:
-            await hass.async_add_executor_job(
-                coordinator._call_api_serialized,
-                lambda: coordinator.api.force_charge_to_soc(target_soc),
+    for service_name, method_name in commands.items():
+        if hass.services.has_service(DOMAIN, service_name):
+            continue
+
+        async def handle_command(
+            call: ServiceCall,
+            _service_name: str = service_name,
+            _method_name: str = method_name,
+        ) -> None:
+            entry_id = call.data["config_entry_id"]
+            runtime = hass.data.get(DOMAIN, {}).get(entry_id)
+            if runtime is None or runtime.mock_transition:
+                raise HomeAssistantError("Active real FusionSolar config entry not found")
+            coordinator = runtime.coordinator
+            if not coordinator.api.connected:
+                raise HomeAssistantError("FusionSolar is not connected; try again after refresh")
+            try:
+                def send_command() -> None:
+                    method = getattr(coordinator.api, _method_name)
+                    if _service_name == "battery_stop":
+                        method()
+                    else:
+                        method(call.data["target_soc"])
+
+                await hass.async_add_executor_job(
+                    coordinator._call_api_serialized,
+                    send_command,
+                )
+            except Exception as err:
+                _LOGGER.warning("Battery %s request failed: %s", _service_name, type(err).__name__)
+                raise HomeAssistantError(
+                    "Battery command failed; check FusionSolar before retrying"
+                ) from err
+
+        fields = {vol.Required("config_entry_id"): str}
+        if service_name != "battery_stop":
+            fields[vol.Required("target_soc")] = vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=100)
             )
-        except Exception as err:
-            _LOGGER.warning("Battery charge request failed: %s", type(err).__name__)
-            raise HomeAssistantError(
-                "Battery charge request failed; check FusionSolar before retrying"
-            ) from err
-
-    hass.services.async_register(
-        DOMAIN,
-        service_name,
-        handle_charge,
-        schema=vol.Schema({
-            vol.Required("config_entry_id"): str,
-            vol.Required("target_soc"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
-        }),
-    )
+        hass.services.async_register(
+            DOMAIN, service_name, handle_command, schema=vol.Schema(fields)
+        )
 
 
 async def _async_migrate_inverter_unique_ids(

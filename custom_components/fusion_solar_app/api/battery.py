@@ -23,24 +23,42 @@ class FusionSolarBatteryMixin:
     """Battery helpers for FusionSolar API."""
 
     def force_charge_to_soc(self, target_soc: int) -> None:
-        """Start a user-requested forced charge via the EU5 web endpoint.
+        """Start forced charging to target SOC (existing public API)."""
+        self._set_battery_mode(1, target_soc)
 
-        This is an undocumented portal API. Never automatically retry a write.
-        """
+    def force_discharge_to_soc(self, target_soc: int) -> None:
+        """Start forced discharging to target SOC."""
+        self._set_battery_mode(2, target_soc)
+
+    def stop_forced_battery_operation(self) -> None:
+        """Stop a forced charge/discharge operation."""
+        self._set_battery_mode(0)
+
+    def _set_battery_mode(self, mode: int, target_soc: int | None = None) -> None:
+        """Send a single write via the undocumented EU5 portal API; never retry."""
         import json
 
-        if type(target_soc) is not int or not 1 <= target_soc <= 100:
+        if type(mode) is not int or mode not in (0, 1, 2):
+            raise ValueError("Invalid battery mode")
+        if mode == 0:
+            if target_soc is not None:
+                raise ValueError("Stop does not accept a target SOC")
+        elif type(target_soc) is not int or not 1 <= target_soc <= 100:
             raise ValueError("target_soc must be an integer between 1 and 100")
         if not self.connected or not self.battery_dn:
             raise RuntimeError("FusionSolar session or battery DN unavailable")
         if self.data_host != "uni001eu5.fusionsolar.huawei.com":
             raise RuntimeError("Battery control is only validated on uni001eu5")
 
+        change_values = [{"id": "230320245", "value": str(mode)}]
+        if target_soc is not None:
+            change_values.append({"id": "230320246", "value": str(target_soc)})
+
         self.refresh_csrf()
         _, payload = self._request_json(
             "POST",
             f"https://{self.data_host}/rest/pvms/web/device/v1/deviceExt/set-config-signals",
-            context="FusionSolar battery forced charge",
+            context="FusionSolar battery control",
             headers={
                 "Accept": "application/json, text/javascript, */*; q=0.01",
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -52,14 +70,11 @@ class FusionSolarBatteryMixin:
             },
             data={
                 "dn": self.battery_dn,
-                "changeValues": json.dumps([
-                    {"id": "230320245", "value": "1"},
-                    {"id": "230320246", "value": str(target_soc)},
-                ], separators=(",", ":")),
+                "changeValues": json.dumps(change_values, separators=(",", ":")),
             },
         )
         if not isinstance(payload, dict) or str(payload.get("code")) != "0":
-            raise RuntimeError("FusionSolar rejected battery charge command")
+            raise RuntimeError("FusionSolar rejected battery control command")
         results = payload.get("data")
         if not isinstance(results, list) or not results or any(
             not isinstance(item, dict) or str(item.get("code")) != "0"
