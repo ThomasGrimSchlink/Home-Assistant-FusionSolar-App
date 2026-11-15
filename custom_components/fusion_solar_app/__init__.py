@@ -145,7 +145,7 @@ def _register_battery_control_services(hass: HomeAssistant) -> None:
                     if _service_name == "battery_stop":
                         method()
                     else:
-                        method(call.data["target_soc"])
+                        method(call.data["target_soc"], call.data.get("target_power"))
 
                 await hass.async_add_executor_job(
                     coordinator._call_api_serialized,
@@ -161,6 +161,9 @@ def _register_battery_control_services(hass: HomeAssistant) -> None:
         if service_name != "battery_stop":
             fields[vol.Required("target_soc")] = vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=100)
+            )
+            fields[vol.Optional("target_power")] = vol.All(
+                vol.Coerce(float), vol.Range(min=0.001, max=5.0)
             )
         hass.services.async_register(
             DOMAIN, service_name, handle_command, schema=vol.Schema(fields)

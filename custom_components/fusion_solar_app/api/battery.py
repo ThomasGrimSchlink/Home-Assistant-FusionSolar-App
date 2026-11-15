@@ -2,6 +2,7 @@ import re
 import logging
 import time
 from typing import Any
+from decimal import Decimal, InvalidOperation
 
 from ..const import (
     BATTERY_DC_URL,
@@ -22,29 +23,42 @@ _LOGGER = logging.getLogger(__name__)
 class FusionSolarBatteryMixin:
     """Battery helpers for FusionSolar API."""
 
-    def force_charge_to_soc(self, target_soc: int) -> None:
+    def force_charge_to_soc(self, target_soc: int, target_power: float | None = None) -> None:
         """Start forced charging to target SOC (existing public API)."""
-        self._set_battery_mode(1, target_soc)
+        self._set_battery_mode(1, target_soc, target_power)
 
-    def force_discharge_to_soc(self, target_soc: int) -> None:
+    def force_discharge_to_soc(self, target_soc: int, target_power: float | None = None) -> None:
         """Start forced discharging to target SOC."""
-        self._set_battery_mode(2, target_soc)
+        self._set_battery_mode(2, target_soc, target_power)
 
     def stop_forced_battery_operation(self) -> None:
         """Stop a forced charge/discharge operation."""
         self._set_battery_mode(0)
 
-    def _set_battery_mode(self, mode: int, target_soc: int | None = None) -> None:
+    def _set_battery_mode(
+        self, mode: int, target_soc: int | None = None, target_power: float | None = None
+    ) -> None:
         """Send a single write via the undocumented EU5 portal API; never retry."""
         import json
 
         if type(mode) is not int or mode not in (0, 1, 2):
             raise ValueError("Invalid battery mode")
         if mode == 0:
-            if target_soc is not None:
-                raise ValueError("Stop does not accept a target SOC")
+            if target_soc is not None or target_power is not None:
+                raise ValueError("Stop does not accept a target SOC or power")
         elif type(target_soc) is not int or not 1 <= target_soc <= 100:
             raise ValueError("target_soc must be an integer between 1 and 100")
+        power_text = None
+        if target_power is not None:
+            try:
+                power = Decimal(str(target_power))
+            except (InvalidOperation, ValueError) as err:
+                raise ValueError("Invalid target_power") from err
+            if not power.is_finite() or not Decimal("0.001") <= power <= Decimal("5.000"):
+                raise ValueError("target_power must be between 0.001 and 5.0 kW")
+            if power != power.quantize(Decimal("0.001")):
+                raise ValueError("target_power supports steps of 0.001 kW")
+            power_text = format(power.normalize(), "f")
         if not self.connected or not self.battery_dn:
             raise RuntimeError("FusionSolar session or battery DN unavailable")
         if self.data_host != "uni001eu5.fusionsolar.huawei.com":
@@ -53,6 +67,9 @@ class FusionSolarBatteryMixin:
         change_values = [{"id": "230320245", "value": str(mode)}]
         if target_soc is not None:
             change_values.append({"id": "230320246", "value": str(target_soc)})
+
+        if power_text is not None:
+            change_values.append({"id": "230320258", "value": power_text})
 
         self.refresh_csrf()
         _, payload = self._request_json(

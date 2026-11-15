@@ -44,6 +44,18 @@ battery_charge:
           step: 1
           mode: box
 
+    target_power:
+      name: Target power (kW)
+      description: Optional. If omitted, FusionSolar retains its existing power setting.
+      required: false
+      example: 2.5
+      selector:
+        number:
+          min: 0.001
+          max: 5.0
+          step: 0.001
+          mode: box
+
 battery_discharge:
   name: Discharge battery to target SOC
   description: >-
@@ -65,6 +77,18 @@ battery_discharge:
           min: 1
           max: 100
           step: 1
+          mode: box
+
+    target_power:
+      name: Target power (kW)
+      description: Optional. If omitted, FusionSolar retains its existing power setting.
+      required: false
+      example: 2.5
+      selector:
+        number:
+          min: 0.001
+          max: 5.0
+          step: 0.001
           mode: box
 
 battery_stop:

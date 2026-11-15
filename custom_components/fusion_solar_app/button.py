@@ -53,6 +53,22 @@ class BatteryCommandButton(ButtonEntity):
             if not 1 <= target <= 100 or not target.is_integer():
                 raise HomeAssistantError("Target SOC must be an integer from 1 to 100")
             payload["target_soc"] = int(target)
+            power_id = registry.async_get_entity_id(
+                "number", DOMAIN, f"{self._entry_id}_battery_control_target_power"
+            )
+            if not power_id:
+                raise HomeAssistantError("Battery target power entity not found")
+            power_state = self.hass.states.get(power_id)
+            if power_state is None or power_state.state in ("unknown", "unavailable"):
+                raise HomeAssistantError("Battery target power is unavailable")
+            from decimal import Decimal, InvalidOperation
+            try:
+                power = Decimal(power_state.state)
+            except (InvalidOperation, ValueError) as err:
+                raise HomeAssistantError("Invalid battery target power") from err
+            if not power.is_finite() or not Decimal("0.001") <= power <= Decimal("5") or power != power.quantize(Decimal("0.001")):
+                raise HomeAssistantError("Target power must be between 0.001 and 5.000 kW")
+            payload["target_power"] = float(power)
         await self.hass.services.async_call(
             DOMAIN, f"battery_{self._action}", payload, blocking=True
         )
